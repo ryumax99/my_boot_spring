@@ -2,9 +2,7 @@ package com.busanit501.boot_project.service;
 
 
 import com.busanit501.boot_project.domain.Board;
-import com.busanit501.boot_project.dto.BoardDTO;
-import com.busanit501.boot_project.dto.PageRequestDTO;
-import com.busanit501.boot_project.dto.PageResponseDTO;
+import com.busanit501.boot_project.dto.*;
 import com.busanit501.boot_project.repository.BoardRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -22,7 +20,7 @@ import java.util.stream.Collectors;
 @Log4j2
 @RequiredArgsConstructor
 @Transactional()
-public class BoardServiceImpl implements BoardService{
+public class BoardServiceImpl implements BoardService {
     // 화면에서 전달 받은 데이터 DTO를 , 엔티티 클래스 타입으로 변환해서,
     // repository 에게 외주 주는 업무.
     private final ModelMapper modelMapper;// 변환 담당자
@@ -32,7 +30,10 @@ public class BoardServiceImpl implements BoardService{
     public Long register(BoardDTO boardDTO) {
         // 변환 먼저하기.
         log.info("보드 서비스 구현체, 등록 과정 중에 변환된 boardDTO 확인 : " + boardDTO);
-        Board board = modelMapper.map(boardDTO, Board.class);
+        // 이전 버전
+//        Board board = modelMapper.map(boardDTO, Board.class);
+        // 보드 서비스의 디폴트 메서드 이용해서, 변환하기. dtoToEntity
+        Board board = dtoToEntity(boardDTO);
         log.info("보드 서비스 구현체, 등록 과정 중에 변환된 board 확인 : " + board);
         // 실제 디비에 쓰기 작업.
         Long bno = boardRepository.save(board).getBno();
@@ -45,10 +46,16 @@ public class BoardServiceImpl implements BoardService{
         // 다른 누군가 만들어 둔 기능을 이용하기.
         // 외주 주기.->boardRepository
         // 패턴 고정, findById -> 받을 때, Optional 받기
-     Optional<Board> result = boardRepository.findById(bno);
-     Board board = result.orElseThrow();
-     // 엔티티 클래스 타입(VO) -> DTO 타입 변환.
-     BoardDTO boardDTO = modelMapper.map(board, BoardDTO.class);
+        // 이전 작업,
+//     Optional<Board> result = boardRepository.findById(bno);
+        // 첨부 이미지 파일 포함된 메서드 교체
+        Optional<Board> result = boardRepository.findByIdWithImages(bno);
+        Board board = result.orElseThrow();
+        // 엔티티 클래스 타입(VO) -> DTO 타입 변환.
+        // 이전 버전
+//        BoardDTO boardDTO = modelMapper.map(board, BoardDTO.class);
+        // 보드 서비스의 디폴트 메서드로 이용하기.
+        BoardDTO boardDTO = entityToDTO(board);
         return boardDTO;
     }
 
@@ -61,6 +68,16 @@ public class BoardServiceImpl implements BoardService{
         Optional<Board> result = boardRepository.findById(boardDTO.getBno());
         Board board = result.orElseThrow();
         board.changTitleContent(boardDTO.getTitle(), boardDTO.getContent());
+
+        // 첨부된 파일 처리 해보기.
+        board.clearImages();
+        if (boardDTO.getFileNames() != null) {
+            for (String fileName : boardDTO.getFileNames()) {
+                String[] arr = fileName.split("_");
+                board.addImage(arr[0], arr[1]);
+            }
+        }
+// 첨부된 파일 처리 해보기.
         boardRepository.save(board);
     }
 
@@ -78,7 +95,7 @@ public class BoardServiceImpl implements BoardService{
         String keyword = pageRequestDTO.getKeyword();
         Pageable pageable = pageRequestDTO.getPageable("bno");
         // 준비된 재료로, 서버에서, 데이터 가져오고, 페이징 정보도 가져오기.
-        Page<Board> result = boardRepository.searchAll(types,keyword,pageable);
+        Page<Board> result = boardRepository.searchAll(types, keyword, pageable);
         // Page<Board> result , 들어 있는 정보들 한번더 확인.
         // 1)전체 갯수 2)전체 페이지 3) 현재 페이지 번호
         // 3) 보여줄 사이즈 크기 4) 이전 페이지 유무
@@ -107,7 +124,47 @@ public class BoardServiceImpl implements BoardService{
         return PageResponseDTO.<BoardDTO>withAll()
                 .pageRequestDTO(pageRequestDTO)
                 .dtoList(dtoList)
-                .total((int)result.getTotalElements())
+                .total((int) result.getTotalElements())
+                .build();
+    }
+
+    @Override
+    public PageResponseDTO<BoardListReplyCountDTO> listWithReplyCount(PageRequestDTO pageRequestDTO) {
+        // type = "twc" -> getTypes -> {"t","c","w"}
+        // 화면으로 부터 전달 받은,
+        // 1)검색 조건과 2)페이징 정보
+        String[] types = pageRequestDTO.getTypes();
+        String keyword = pageRequestDTO.getKeyword();
+        Pageable pageable = pageRequestDTO.getPageable("bno");
+
+        //2) result : 보드 레포지토리 테스트에서, 관련 정보 확인 해주세요.
+        Page<BoardListReplyCountDTO> result = boardRepository.searchWithReplyCount(types, keyword, pageable);
+
+
+        return PageResponseDTO.<BoardListReplyCountDTO>withAll()
+                .pageRequestDTO(pageRequestDTO)
+                .dtoList(result.getContent())
+                .total((int) result.getTotalElements())
+                .build();
+    }
+
+    // 기존 , 1) 페이징 2) 검색 3) 댓글 갯수 , 버전으로 목록 출력. 4) 첨부 이미지들
+    // 참고로 위에는 1) ~ 3) 구현이 된 상태임. 4) 번만 추가
+    @Override
+    public PageResponseDTO<BoardListAllDTO> listWithAll(PageRequestDTO pageRequestDTO) {
+        // 검색
+        String[] types = pageRequestDTO.getTypes();
+        String keyword = pageRequestDTO.getKeyword();
+        // 페이징 정보
+        Pageable pageable = pageRequestDTO.getPageable("bno");
+
+        // 준비물을 이용해서, 레포지토리에게 외주주기, 디비에서 데이터 가져오기 작업.
+        Page<BoardListAllDTO>result = boardRepository.searchWithAll(types, keyword, pageable);
+
+        return PageResponseDTO.<BoardListAllDTO>withAll()
+                .pageRequestDTO(pageRequestDTO)
+                .dtoList(result.getContent())
+                .total((int) result.getTotalElements())
                 .build();
     }
 }
